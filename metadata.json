@@ -1,0 +1,5 @@
+{
+  "name": "Replicate Image Generator",
+  "description": "A simple web app to generate images using Replicate API and google/nano-banana-pro model.",
+  "requestFramePermissions": []
+}
