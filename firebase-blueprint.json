@@ -33,16 +33,35 @@
         "userId": { "type": "string" }
       },
       "required": ["category", "prompts", "userId"]
+    },
+    "SupportTicket": {
+      "title": "Support Ticket",
+      "description": "A support ticket created by a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "in-progress", "resolved", "closed"] },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "createdAt": { "type": "number" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "status", "priority", "createdAt", "userId"]
     }
   },
   "firestore": {
-    "/users/{userId}/history/{historyId}": {
+    "/users/{userId}/projects/{projectId}/history/{historyId}": {
       "schema": { "$ref": "#/entities/HistoryItem" },
-      "description": "User's generated image history"
+      "description": "User's generated image history for a specific project"
     },
     "/users/{userId}/promptBank/{categoryId}": {
       "schema": { "$ref": "#/entities/PromptCategory" },
       "description": "User's custom prompt bank categories"
+    },
+    "/users/{userId}/supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "User's support tickets"
     }
   }
 }

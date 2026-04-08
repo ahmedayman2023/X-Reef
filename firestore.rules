@@ -6,7 +6,7 @@ service cloud.firestore {
     // Assumed Data Model
     // ===============================================================
     //
-    // Collection: /users/{userId}/history/{historyId}
+    // Collection: /users/{userId}/projects/{projectId}/history/{historyId}
     // Fields:
     //   - id: string (required)
     //   - url: string (required, url format)
@@ -20,6 +20,16 @@ service cloud.firestore {
     //   - prompts: list (required, max 100 items)
     //       - title: string (max 100 chars)
     //       - prompt: string (max 2000 chars)
+    //   - userId: string (required, immutable, matches document owner)
+    //
+    // Collection: /users/{userId}/supportTickets/{ticketId}
+    // Fields:
+    //   - id: string (required)
+    //   - title: string (required, max 200 chars)
+    //   - description: string (required, max 5000 chars)
+    //   - status: string (required, enum: open, in-progress, resolved, closed)
+    //   - priority: string (required, enum: low, medium, high)
+    //   - createdAt: number (required)
     //   - userId: string (required, immutable, matches document owner)
     //
     // ===============================================================
@@ -92,10 +102,22 @@ service cloud.firestore {
              data.userId == userId;
     }
 
+    function isValidSupportTicket(data, userId) {
+      return hasOnlyAllowedFields(['id', 'title', 'description', 'status', 'priority', 'createdAt', 'userId']) &&
+             hasRequiredFields(['id', 'title', 'description', 'status', 'priority', 'createdAt', 'userId']) &&
+             isValidString(data.id, 1, 100) &&
+             isValidString(data.title, 1, 200) &&
+             isValidString(data.description, 1, 5000) &&
+             data.status in ['open', 'in-progress', 'resolved', 'closed'] &&
+             data.priority in ['low', 'medium', 'high'] &&
+             data.createdAt is number &&
+             data.userId == userId;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
-    match /users/{userId}/history/{historyId} {
+    match /users/{userId}/projects/{projectId}/history/{historyId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && isValidHistoryItem(request.resource.data, userId) && uidUnchanged();
       allow update: if isOwner(userId) && isValidHistoryItem(request.resource.data, userId) && uidNotModified();
@@ -106,6 +128,13 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && isValidPromptCategory(request.resource.data, userId) && uidUnchanged();
       allow update: if isOwner(userId) && isValidPromptCategory(request.resource.data, userId) && uidNotModified();
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/supportTickets/{ticketId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidSupportTicket(request.resource.data, userId) && uidUnchanged();
+      allow update: if isOwner(userId) && isValidSupportTicket(request.resource.data, userId) && uidNotModified();
       allow delete: if isOwner(userId);
     }
   }
