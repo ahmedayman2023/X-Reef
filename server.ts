@@ -2,7 +2,6 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import Replicate from "replicate";
-import { GoogleGenAI } from "@google/genai";
 
 async function startServer() {
   const app = express();
@@ -27,26 +26,7 @@ async function startServer() {
         auth: replicateApiToken,
       });
 
-      // Translate prompt to English using Gemini
-      let translatedPrompt = prompt;
-      try {
-        if (process.env.GEMINI_API_KEY) {
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: `Translate the following text to English. If it is already in English, just return it as is. Only return the translated text, nothing else.\n\nText: ${prompt}`,
-          });
-          if (response.text) {
-            translatedPrompt = response.text.trim();
-            console.log(`Original prompt: ${prompt}\nTranslated prompt: ${translatedPrompt}`);
-          }
-        }
-      } catch (translateError: any) {
-        console.warn("Translation skipped or failed:", translateError.message || translateError);
-        // Fallback to original prompt if translation fails
-      }
-
-      let finalPrompt = translatedPrompt;
+      let finalPrompt = prompt;
       if (negativePrompt && negativePrompt.trim() !== "") {
         finalPrompt += `\nNegative prompt: ${negativePrompt}`;
       }

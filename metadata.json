@@ -1,5 +1,5 @@
 {
-  "name": "Replicate Image Generator V1.1",
+  "name": "Xreef Version 1.1",
   "description": "A simple web app to generate images using Replicate API and google/nano-banana-pro model.",
   "requestFramePermissions": []
 }
