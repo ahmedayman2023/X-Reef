@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Loader2, Image as ImageIcon, Upload, X, Download, Sparkles, ChevronDown, ChevronUp, Maximize2, Clock, Trash2, Crop, Zap, ImagePlus, Library, Edit2, Plus, Save, LayoutTemplate, Settings2 } from "lucide-react";
+import { Loader2, Image as ImageIcon, Upload, X, Download, Sparkles, ChevronDown, ChevronUp, Maximize2, Clock, Trash2, Crop, Zap, ImagePlus, Library, Edit2, Plus, Save, LayoutTemplate, Settings2, LogIn, LogOut, Mail, Lock, UserPlus } from "lucide-react";
 import ReactCrop, { type Crop as CropType } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
+import { auth, db, signInWithGoogle, signInWithEmail, signUpWithEmail, logOut, handleFirestoreError, OperationType } from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, doc, setDoc, onSnapshot, query, orderBy, deleteDoc } from 'firebase/firestore';
 
 interface HistoryItem {
   id: string;
@@ -83,12 +86,19 @@ export default function App() {
   // Upscale State
   const [isUpscaling, setIsUpscaling] = useState<string | null>(null);
 
+  // Auth State
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
   // Prompt Bank State
   const [isPromptBankOpen, setIsPromptBankOpen] = useState(false);
-  const [promptBank, setPromptBank] = useState(() => {
-    const saved = localStorage.getItem('xreef_prompt_bank');
-    return saved ? JSON.parse(saved) : DEFAULT_PROMPT_BANK;
-  });
+  const [promptBank, setPromptBank] = useState<any[]>([]);
   const [isPromptBankEditMode, setIsPromptBankEditMode] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<{catIdx: number, promptIdx: number, title: string, prompt: string} | null>(null);
   const [isAddingCategory, setIsAddingCategory] = useState(false);
@@ -111,12 +121,122 @@ export default function App() {
   const templateCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    localStorage.setItem('xreef_prompt_bank', JSON.stringify(promptBank));
-  }, [promptBank]);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+
+    if (user) {
+      // Fetch History
+      const historyRef = collection(db, `users/${user.uid}/history`);
+      const qHistory = query(historyRef, orderBy('timestamp', 'desc'));
+      const unsubHistory = onSnapshot(qHistory, (snapshot) => {
+        const historyData: HistoryItem[] = [];
+        snapshot.forEach((doc) => {
+          historyData.push(doc.data() as HistoryItem);
+        });
+        setHistory(historyData);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, `users/${user.uid}/history`);
+      });
+
+      // Fetch Prompt Bank
+      const promptBankRef = collection(db, `users/${user.uid}/promptBank`);
+      const unsubPromptBank = onSnapshot(promptBankRef, (snapshot) => {
+        const bankData: any[] = [];
+        snapshot.forEach((doc) => {
+          bankData.push({ id: doc.id, ...doc.data() });
+        });
+        if (bankData.length > 0) {
+          setPromptBank(bankData);
+        } else {
+          setPromptBank(DEFAULT_PROMPT_BANK);
+          DEFAULT_PROMPT_BANK.forEach(async (cat, idx) => {
+            try {
+              const catId = `cat_${Date.now()}_${idx}`;
+              await setDoc(doc(db, `users/${user.uid}/promptBank`, catId), {
+                ...cat,
+                userId: user.uid
+              });
+            } catch (err) {
+               handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/promptBank`);
+            }
+          });
+        }
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, `users/${user.uid}/promptBank`);
+      });
+
+      return () => {
+        unsubHistory();
+        unsubPromptBank();
+      };
+    } else {
+      try {
+        const savedHistory = localStorage.getItem('xreef_history');
+        setHistory(savedHistory ? JSON.parse(savedHistory) : []);
+        const savedBank = localStorage.getItem('xreef_prompt_bank');
+        setPromptBank(savedBank ? JSON.parse(savedBank) : DEFAULT_PROMPT_BANK);
+      } catch (e) {
+        setHistory([]);
+        setPromptBank(DEFAULT_PROMPT_BANK);
+      }
+    }
+  }, [user, isAuthReady]);
 
   useEffect(() => {
     localStorage.setItem('xreef_template_settings', JSON.stringify(templateSettings));
   }, [templateSettings]);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAuthLoading(true);
+    setAuthError(null);
+    try {
+      if (authMode === 'login') {
+        await signInWithEmail(email, password);
+      } else {
+        await signUpWithEmail(email, password);
+      }
+      setIsAuthModalOpen(false);
+      setEmail('');
+      setPassword('');
+    } catch (err: any) {
+      console.error("Auth error:", err);
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        setAuthError("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
+      } else if (err.code === 'auth/email-already-in-use') {
+        setAuthError("البريد الإلكتروني مستخدم بالفعل.");
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError("كلمة المرور ضعيفة، يجب أن تكون 6 أحرف على الأقل.");
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setAuthError("تسجيل الدخول غير مفعل في لوحة تحكم Firebase.");
+      } else {
+        setAuthError(err.message || "حدث خطأ أثناء المصادقة.");
+      }
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    setAuthError(null);
+    try {
+      await signInWithGoogle();
+      setIsAuthModalOpen(false);
+    } catch (err: any) {
+      if (err.code === 'auth/operation-not-allowed') {
+        setAuthError("تسجيل الدخول بحساب Google غير مفعل في لوحة تحكم Firebase.");
+      } else {
+        setAuthError("حدث خطأ أثناء تسجيل الدخول بحساب Google.");
+      }
+    }
+  };
 
   useEffect(() => {
     if (!isTemplateModalOpen || !templateImage || !imageToTemplate || !templateCanvasRef.current) return;
@@ -184,37 +304,95 @@ export default function App() {
     setIsTemplateModalOpen(true);
   };
 
-  const handleSavePrompt = () => {
+  const handleSavePrompt = async () => {
     if (!editingPrompt || !editingPrompt.title.trim() || !editingPrompt.prompt.trim()) return;
     const newBank = [...promptBank];
+    const cat = newBank[editingPrompt.catIdx];
+    
     if (editingPrompt.promptIdx === -1) {
-      newBank[editingPrompt.catIdx].prompts.push({ title: editingPrompt.title, prompt: editingPrompt.prompt });
+      cat.prompts.push({ title: editingPrompt.title, prompt: editingPrompt.prompt });
     } else {
-      newBank[editingPrompt.catIdx].prompts[editingPrompt.promptIdx] = { title: editingPrompt.title, prompt: editingPrompt.prompt };
+      cat.prompts[editingPrompt.promptIdx] = { title: editingPrompt.title, prompt: editingPrompt.prompt };
     }
-    setPromptBank(newBank);
+    
+    if (user && cat.id) {
+      try {
+        await setDoc(doc(db, `users/${user.uid}/promptBank`, cat.id), {
+          category: cat.category,
+          prompts: cat.prompts,
+          userId: user.uid
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}/promptBank`);
+      }
+    } else {
+      setPromptBank(newBank);
+      localStorage.setItem('xreef_prompt_bank', JSON.stringify(newBank));
+    }
     setEditingPrompt(null);
   };
 
-  const handleDeletePrompt = (catIdx: number, promptIdx: number) => {
+  const handleDeletePrompt = async (catIdx: number, promptIdx: number) => {
     if(!confirm("هل أنت متأكد من حذف هذا الوصف؟")) return;
     const newBank = [...promptBank];
-    newBank[catIdx].prompts.splice(promptIdx, 1);
-    setPromptBank(newBank);
+    const cat = newBank[catIdx];
+    cat.prompts.splice(promptIdx, 1);
+    
+    if (user && cat.id) {
+      try {
+        await setDoc(doc(db, `users/${user.uid}/promptBank`, cat.id), {
+          category: cat.category,
+          prompts: cat.prompts,
+          userId: user.uid
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}/promptBank`);
+      }
+    } else {
+      setPromptBank(newBank);
+      localStorage.setItem('xreef_prompt_bank', JSON.stringify(newBank));
+    }
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     if (!newCategoryName.trim()) return;
-    setPromptBank([...promptBank, { category: newCategoryName, prompts: [] }]);
+    
+    if (user) {
+      try {
+        const catId = `cat_${Date.now()}`;
+        await setDoc(doc(db, `users/${user.uid}/promptBank`, catId), {
+          category: newCategoryName,
+          prompts: [],
+          userId: user.uid
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/promptBank`);
+      }
+    } else {
+      const newBank = [...promptBank, { category: newCategoryName, prompts: [] }];
+      setPromptBank(newBank);
+      localStorage.setItem('xreef_prompt_bank', JSON.stringify(newBank));
+    }
     setNewCategoryName("");
     setIsAddingCategory(false);
   };
 
-  const handleDeleteCategory = (catIdx: number) => {
+  const handleDeleteCategory = async (catIdx: number) => {
     if(!confirm("هل أنت متأكد من حذف هذا التصنيف بالكامل؟")) return;
-    const newBank = [...promptBank];
-    newBank.splice(catIdx, 1);
-    setPromptBank(newBank);
+    const cat = promptBank[catIdx];
+    
+    if (user && cat.id) {
+      try {
+        await deleteDoc(doc(db, `users/${user.uid}/promptBank`, cat.id));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `users/${user.uid}/promptBank`);
+      }
+    } else {
+      const newBank = [...promptBank];
+      newBank.splice(catIdx, 1);
+      setPromptBank(newBank);
+      localStorage.setItem('xreef_prompt_bank', JSON.stringify(newBank));
+    }
   };
 
   useEffect(() => {
@@ -248,27 +426,34 @@ export default function App() {
   }, [isLoading]);
 
   // History State
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('xreef_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  });
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
-  useEffect(() => {
-    localStorage.setItem('xreef_history', JSON.stringify(history));
-  }, [history]);
-
-  const addToHistory = (urls: string[], currentPrompt: string) => {
+  const addToHistory = async (urls: string[], currentPrompt: string) => {
     const newItems = urls.map(url => ({
       id: Math.random().toString(36).substring(2, 9),
       url,
       prompt: currentPrompt,
       timestamp: Date.now()
     }));
-    setHistory(prev => [...newItems, ...prev].slice(0, 50)); // Keep last 50 images
+    
+    if (user) {
+      for (const item of newItems) {
+        try {
+          await setDoc(doc(db, `users/${user.uid}/history`, item.id), {
+            ...item,
+            userId: user.uid
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/history`);
+        }
+      }
+    } else {
+      setHistory(prev => {
+        const next = [...newItems, ...prev].slice(0, 50);
+        localStorage.setItem('xreef_history', JSON.stringify(next));
+        return next;
+      });
+    }
   };
 
   const compressImage = (file: File): Promise<string> => {
@@ -455,9 +640,27 @@ export default function App() {
         setImageUrls(prev => prev.map(url => url === urlToUpscale ? data.output : url));
         
         // Replace in history
-        setHistory(prev => prev.map(item => 
-          item.url === urlToUpscale ? { ...item, url: data.output } : item
-        ));
+        if (user) {
+          const itemToUpdate = history.find(item => item.url === urlToUpscale);
+          if (itemToUpdate) {
+            try {
+              await setDoc(doc(db, `users/${user.uid}/history`, itemToUpdate.id), {
+                ...itemToUpdate,
+                url: data.output
+              });
+            } catch (err) {
+              handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}/history`);
+            }
+          }
+        } else {
+          setHistory(prev => {
+            const next = prev.map(item => 
+              item.url === urlToUpscale ? { ...item, url: data.output } : item
+            );
+            localStorage.setItem('xreef_history', JSON.stringify(next));
+            return next;
+          });
+        }
 
         // If it's the currently selected image, update it
         if (selectedImage === urlToUpscale) {
@@ -540,6 +743,115 @@ export default function App() {
       closeCropModal();
     }, 'image/png');
   };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <Loader2 className="w-12 h-12 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-black text-white font-sans selection:bg-blue-500/30 flex items-center justify-center p-4 relative" dir="rtl">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(37,99,235,0.15)_0%,transparent_100%)]"></div>
+        <div className="bg-gray-900/80 backdrop-blur-xl border border-blue-500/30 p-8 rounded-3xl shadow-2xl max-w-md w-full relative z-10">
+          <div className="flex justify-center mb-6">
+            <Sparkles className="w-12 h-12 text-blue-500" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2 text-center">
+            مرحباً بك في Xreef
+          </h2>
+          <p className="text-gray-400 text-center mb-6 text-sm">
+            يرجى تسجيل الدخول للوصول إلى التطبيق
+          </p>
+
+          {authError && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-xl mb-4 text-sm">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleEmailAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">البريد الإلكتروني</label>
+              <div className="relative">
+                <Mail className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+                <input 
+                  type="email" 
+                  required 
+                  value={email} 
+                  onChange={e => setEmail(e.target.value)} 
+                  className="w-full pl-4 pr-10 py-3 bg-black/50 border border-gray-700 rounded-xl text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all" 
+                  dir="ltr" 
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">كلمة المرور</label>
+              <div className="relative">
+                <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+                <input 
+                  type="password" 
+                  required 
+                  minLength={6} 
+                  value={password} 
+                  onChange={e => setPassword(e.target.value)} 
+                  className="w-full pl-4 pr-10 py-3 bg-black/50 border border-gray-700 rounded-xl text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all" 
+                  dir="ltr" 
+                />
+              </div>
+            </div>
+            <button 
+              type="submit" 
+              disabled={isAuthLoading} 
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-colors flex justify-center items-center gap-2 mt-2"
+            >
+              {isAuthLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                authMode === 'login' ? <LogIn className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />
+              )}
+              {authMode === 'login' ? 'دخول' : 'تسجيل'}
+            </button>
+          </form>
+
+          <div className="mt-6 flex items-center justify-between">
+            <hr className="w-full border-gray-700" />
+            <span className="px-3 text-gray-500 text-sm">أو</span>
+            <hr className="w-full border-gray-700" />
+          </div>
+
+          <button 
+            onClick={handleGoogleAuth} 
+            className="mt-6 w-full bg-white hover:bg-gray-100 text-gray-900 font-bold py-3 rounded-xl transition-colors flex justify-center items-center gap-2"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+            </svg>
+            المتابعة باستخدام Google
+          </button>
+
+          <div className="mt-6 text-center text-sm text-gray-400">
+            {authMode === 'login' ? 'ليس لديك حساب؟ ' : 'لديك حساب بالفعل؟ '}
+            <button 
+              onClick={() => { 
+                setAuthMode(authMode === 'login' ? 'signup' : 'login'); 
+                setAuthError(null); 
+              }} 
+              className="text-blue-400 hover:text-blue-300 font-bold"
+            >
+              {authMode === 'login' ? 'إنشاء حساب' : 'تسجيل الدخول'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div 
@@ -685,12 +997,41 @@ export default function App() {
       <div className="relative z-10 max-w-6xl w-full space-y-10">
         
         {/* Header */}
-        <div className="text-center space-y-4">
-          <h1 className="text-5xl md:text-7xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-blue-600 tracking-tight flex items-center justify-center gap-4 drop-shadow-lg">
+        <div className="flex flex-col items-center space-y-4 relative">
+          <div className="absolute right-0 top-0">
+            {user ? (
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  {user.photoURL && <img src={user.photoURL} alt="User" className="w-8 h-8 rounded-full border border-blue-500/30" />}
+                  <span className="text-sm text-gray-300 hidden sm:inline-block">{user.displayName}</span>
+                </div>
+                <button
+                  onClick={logOut}
+                  className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 px-4 py-2 rounded-full text-sm font-medium transition-colors border border-red-500/20"
+                >
+                  <LogOut className="w-4 h-4" />
+                  تسجيل الخروج
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => {
+                  setAuthMode('login');
+                  setAuthError(null);
+                  setIsAuthModalOpen(true);
+                }}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-lg hover:scale-105"
+              >
+                <LogIn className="w-4 h-4" />
+                تسجيل الدخول لحفظ بياناتك
+              </button>
+            )}
+          </div>
+          <h1 className="text-5xl md:text-7xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-blue-600 tracking-tight flex items-center justify-center gap-4 drop-shadow-lg mt-12 sm:mt-0">
             <Sparkles className="w-12 h-12 text-blue-500" />
             Xreef Version 1.0
           </h1>
-          <p className="text-lg md:text-xl text-gray-300 max-w-2xl mx-auto font-light">
+          <p className="text-lg md:text-xl text-gray-300 max-w-2xl mx-auto font-light text-center">
             أطلق العنان لخيالك. قم بتوليد وتعديل الصور باستخدام أحدث تقنيات الذكاء الاصطناعي.
           </p>
         </div>
@@ -1082,7 +1423,20 @@ export default function App() {
                 سجل الصور السابقة
               </h2>
               <button 
-                onClick={() => setHistory([])} 
+                onClick={async () => {
+                  if (user) {
+                    try {
+                      for (const item of history) {
+                        await deleteDoc(doc(db, `users/${user.uid}/history`, item.id));
+                      }
+                    } catch (err) {
+                      handleFirestoreError(err, OperationType.DELETE, `users/${user.uid}/history`);
+                    }
+                  } else {
+                    setHistory([]);
+                    localStorage.removeItem('xreef_history');
+                  }
+                }} 
                 className="text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-4 py-2 rounded-xl flex items-center gap-2 text-sm transition-colors"
               >
                 <Trash2 className="w-4 h-4" />

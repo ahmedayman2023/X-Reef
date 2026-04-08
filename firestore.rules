@@ -1,0 +1,112 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{userId}/history/{historyId}
+    // Fields:
+    //   - id: string (required)
+    //   - url: string (required, url format)
+    //   - prompt: string (required, max 2000 chars)
+    //   - timestamp: number (required)
+    //   - userId: string (required, immutable, matches document owner)
+    //
+    // Collection: /users/{userId}/promptBank/{categoryId}
+    // Fields:
+    //   - category: string (required, max 100 chars)
+    //   - prompts: list (required, max 100 items)
+    //       - title: string (max 100 chars)
+    //       - prompt: string (max 2000 chars)
+    //   - userId: string (required, immutable, matches document owner)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function hasRequiredFields(requiredFields) {
+      return request.resource.data.keys().hasAll(requiredFields);
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*")) && url.size() < 2000;
+    }
+
+    function isValidString(str, minLen, maxLen) {
+      return str is string && str.size() >= minLen && str.size() <= maxLen;
+    }
+
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidHistoryItem(data, userId) {
+      return hasOnlyAllowedFields(['id', 'url', 'prompt', 'timestamp', 'userId']) &&
+             hasRequiredFields(['id', 'url', 'prompt', 'timestamp', 'userId']) &&
+             isValidString(data.id, 1, 100) &&
+             isValidUrl(data.url) &&
+             isValidString(data.prompt, 0, 5000) &&
+             data.timestamp is number &&
+             data.userId == userId;
+    }
+
+    function isValidPromptItem(item) {
+      return item is map &&
+             item.keys().hasOnly(['title', 'prompt']) &&
+             item.keys().hasAll(['title', 'prompt']) &&
+             isValidString(item.title, 1, 200) &&
+             isValidString(item.prompt, 1, 5000);
+    }
+
+    function isValidPromptList(prompts) {
+      return prompts is list && prompts.size() <= 200;
+    }
+
+    function isValidPromptCategory(data, userId) {
+      return hasOnlyAllowedFields(['category', 'prompts', 'userId']) &&
+             hasRequiredFields(['category', 'prompts', 'userId']) &&
+             isValidString(data.category, 1, 100) &&
+             isValidPromptList(data.prompts) &&
+             data.userId == userId;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /users/{userId}/history/{historyId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidHistoryItem(request.resource.data, userId) && uidUnchanged();
+      allow update: if isOwner(userId) && isValidHistoryItem(request.resource.data, userId) && uidNotModified();
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/promptBank/{categoryId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidPromptCategory(request.resource.data, userId) && uidUnchanged();
+      allow update: if isOwner(userId) && isValidPromptCategory(request.resource.data, userId) && uidNotModified();
+      allow delete: if isOwner(userId);
+    }
+  }
+}
